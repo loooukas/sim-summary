@@ -17,13 +17,29 @@ const chartConfig = {
   },
 } satisfies ChartConfig
 
-export function MonthlyBreakdownChart({ analysisResult }: MonthlyBreakdownChartProps) {
-  // Show the previous 6 months: Dec 2024, Jan-May 2025
-  const previous6Months = ["2024-12", "2025-01", "2025-02", "2025-03", "2025-04", "2025-05"]
+/**
+ * Return the last six **complete** calendar months as `YYYY‑MM` strings,
+ * earliest first.  Months with zero tickets are included (count = 0) so the
+ * chart always shows a continuous timeline that matches the table.
+ */
+function getLastSixMonths(_: string[]): string[] {
+  const now = new Date();
+  // “Last complete month” is the one before the current month
+  const end = new Date(now.getFullYear(), now.getMonth(), 1);
 
-  const chartData = previous6Months.map((month) => ({
-    month: new Date(month + "-01").toLocaleDateString("en-US", { month: "short", year: "2-digit" }),
-    tickets: analysisResult.monthlyTickets[month] || 0,
+  const months: string[] = [];
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(end.getFullYear(), end.getMonth() - i, 1);
+    months.push(d.toISOString().slice(0, 7)); // YYYY‑MM
+  }
+  return months;
+}
+
+export function MonthlyBreakdownChart({ analysisResult }: MonthlyBreakdownChartProps) {
+  const months = getLastSixMonths(Object.keys(analysisResult.monthlyTickets));
+  const chartData = months.map(m => ({
+    month: new Date(`${m}-01`).toLocaleDateString("en-US", { month: "short", year: "2-digit" }),
+    tickets: analysisResult.monthlyTickets[m] ?? 0,
   }))
 
   if (chartData.length === 0) {
@@ -63,7 +79,7 @@ export function MonthlyBreakdownChart({ analysisResult }: MonthlyBreakdownChartP
             <CartesianGrid vertical={false} />
             <XAxis dataKey="month" tickLine={false} tickMargin={10} axisLine={false} />
             <YAxis />
-            <ChartTooltip content={<ChartTooltipContent />} formatter={(value, name) => [value, "Tickets"]} />
+            <ChartTooltip content={<ChartTooltipContent />} formatter={(value, name) => [`${value} Tickets`, ""]} />
             <Bar dataKey="tickets" fill="var(--color-tickets)" radius={[4, 4, 0, 0]}>
               <LabelList dataKey="tickets" position="top" className="fill-foreground text-xs font-medium" />
             </Bar>

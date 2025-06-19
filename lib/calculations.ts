@@ -40,20 +40,18 @@ export function isValidDate(dateString: string): boolean {
 }
 
 export function getShift(date: Date): string {
-  const dayOfWeek = date.getDay()
-  const hour = date.getHours()
-  const minute = date.getMinutes()
+  const dow = date.getDay();
+  const minutes = date.getHours() * 60 + date.getMinutes();
+  const isDayShift = minutes >= 270 && minutes < 990; // 04:30–16:29
 
-  const timeOfDay = hour * 100 + minute
-  const isDayShift = 430 <= timeOfDay && timeOfDay < 1630
-
-  if ([0, 1, 2].includes(dayOfWeek)) {
-    return isDayShift ? "Front Half Days" : "Front Half Nights"
-  } else if ([4, 5, 6].includes(dayOfWeek)) {
-    return isDayShift ? "Back Half Days" : "Back Half Nights"
-  } else {
-    return isDayShift ? "Wednesday Days" : "Wednesday Nights"
+  if (dow <= 2) {
+    return isDayShift ? "Front Half Days" : "Front Half Nights";
   }
+  if (dow >= 4) {
+    return isDayShift ? "Back Half Days" : "Back Half Nights";
+  }
+  // Wednesday
+  return isDayShift ? "Wednesday Days" : "Wednesday Nights";
 }
 
 export function calculateAllMetrics(data: TicketData[]): CalculationResults {
@@ -76,7 +74,8 @@ export function calculateAllMetrics(data: TicketData[]): CalculationResults {
   const ytdStart = new Date(currentDate.getFullYear(), 0, 1)
   const currentMonthStart = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1)
   const last4WeeksStart = new Date(currentDate.getTime() - 28 * 24 * 60 * 60 * 1000)
-  const last6MonthsStart = new Date(currentDate.getTime() - 6 * 30 * 24 * 60 * 60 * 1000)
+  const last6MonthsStart = new Date(currentDate.getFullYear(), currentDate.getMonth() - 6, 1) // first day 6 months ago
+  const last6MonthsEnd = new Date(currentDate.getFullYear(), currentDate.getMonth(), 0)       // last day of the previous month
 
   // Calculate current month progress
   const totalDaysInMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0).getDate()
@@ -125,8 +124,8 @@ export function calculateAllMetrics(data: TicketData[]): CalculationResults {
       last4WeeksCount++
     }
 
-    // Last 6 months count
-    if (createDate >= last6MonthsStart) {
+    // Last 6 full calendar months (excluding current month)
+    if (createDate >= last6MonthsStart && createDate <= last6MonthsEnd) {
       last6MonthsCount++
       last6MonthsShiftBreakdown[shift] = (last6MonthsShiftBreakdown[shift] || 0) + 1
     }

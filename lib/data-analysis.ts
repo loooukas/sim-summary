@@ -12,12 +12,16 @@ export interface AnalysisResult {
   avgMonthly: number
   avgWeekly: number
   avgResolutionTime: number // Added this field
-  shiftCounts: Record<string, number>
-  last1MonthShiftCounts: Record<string, number>
-  last3MonthsShiftCounts: Record<string, number>
-  last6MonthsShiftCounts: Record<string, number>
+  shiftCounts: Record<ShiftLabel, number>
+  last1MonthShiftCounts: Record<ShiftLabel, number>
+  last3MonthsShiftCounts: Record<ShiftLabel, number>
+  last6MonthsShiftCounts: Record<ShiftLabel, number>
   monthlyTickets: Record<string, number>
   monthlyResolveTimes: Record<string, number[]>
+  /** @deprecated – use monthlyStats instead */
+  monthlyLastSix: { month: string; tickets: number; avgResolve: number }[]
+  /** Last 6 full calendar months – oldest→newest */
+  monthlyStats: MonthlyStat[]
   weeklyTickets: Record<string, number>
   weeklyResolveTimes: Record<string, number[]>
   currentMonthCount: number
@@ -32,6 +36,15 @@ export interface AnalysisResult {
   last4CalendarWeeksCount: number
 }
 
+export interface MonthlyStat {
+  /** YYYY-MM-01 */
+  monthStart: string;
+  /** e.g. “Dec 2024” */
+  label: string;
+  totalTickets: number;
+  avgResolutionHrs: number;
+}
+
 interface ProcessedTicket {
   createDate: Date
   resolveDate: Date
@@ -41,48 +54,121 @@ interface ProcessedTicket {
   weekKey: string
 }
 
-export function isValidDate(dateString: string): boolean {
-  if (!dateString || typeof dateString !== "string") return false
-  const date = new Date(dateString)
-  return !isNaN(date.getTime()) && date.getFullYear() > 1900 && date.getFullYear() < 2100
+
+import { generateTestData } from "./test-data"
+
+/**
+ * Parse an ISO timestamp in the form “YYYY-MM-DDTHH:mm:ss” **as local time**.
+ * The built‑in Date parser treats such strings as UTC in some runtimes,
+ * which shifts the calendar day and breaks our shift mapping.
+ * Returns `null` when the string doesn't match the expected shape.
+ */
+function parseLocalISO(iso: string): Date | null {
+  const m =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})$/u.exec(iso.trim());
+  if (!m) return null;
+  const [, y, M, d, h, mi, s] = m.map(Number);
+  return new Date(y, M - 1, d, h, mi, s);
 }
 
-export function getShift(date: Date): string {
-  const dayOfWeek = date.getDay()
-  const hour = date.getHours()
-  const minute = date.getMinutes()
+/** ---------- Canonical shift list shared across UI & logic ---------- */
+export const SHIFT_LABELS = [
+  "Front Half Days",
+  "Front Half Nights",
+  "Back Half Days",
+  "Back Half Nights",
+  "Wednesday Days",
+  "Wednesday Nights",
+] as const;
 
-  const timeOfDay = hour * 100 + minute
-  const isDayShift = 430 <= timeOfDay && timeOfDay < 1630
+/** Utility to pre‑fill a shift count record with zeros */
+function makeShiftRecord(): Record<ShiftLabel, number> {
+  return {
+    "Front Half Days": 0,
+    "Front Half Nights": 0,
+    "Back Half Days": 0,
+    "Back Half Nights": 0,
+    "Wednesday Days": 0,
+    "Wednesday Nights": 0,
+  };
+}
+
+export type ShiftLabel = (typeof SHIFT_LABELS)[number];
+
+export function isValidDate(dateString: string): boolean {
+  return !!parseLocalISO(dateString);
+}
+
+export function getShift(date: Date): ShiftLabel {
+  const dayOfWeek = date.getDay()        // 0 = Sun … 6 = Sat
+  const minutes  = date.getHours() * 60 + date.getMinutes()
+  const isDay    = minutes >= 270 && minutes < 990  // 04:30‑16:29
 
   if ([0, 1, 2].includes(dayOfWeek)) {
-    return isDayShift ? "Front Half Days" : "Front Half Nights"
-  } else if ([4, 5, 6].includes(dayOfWeek)) {
-    return isDayShift ? "Back Half Days" : "Back Half Nights"
-  } else {
-    return isDayShift ? "Wednesday Days" : "Wednesday Nights"
+    return isDay ? "Front Half Days" : "Front Half Nights"
   }
+  if ([4, 5, 6].includes(dayOfWeek)) {
+    return isDay ? "Back Half Days"  : "Back Half Nights"
+  }
+  // Wednesday
+  return isDay ? "Wednesday Days" : "Wednesday Nights"
 }
 
 function getWeekStart(date: Date): Date {
-  const dayOfWeek = date.getDay()
-  const diff = date.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1)
-  return new Date(date.setDate(diff))
+  // Clone the original date so the caller’s object remains unchanged
+  const start = new Date(date);
+  const day = start.getDay();                    // 0 = Sun … 6 = Sat
+  const diff = start.getDate() - day + (day === 0 ? -6 : 1); // Monday start
+  start.setDate(diff);
+  start.setHours(0, 0, 0, 0);                    // normalise to midnight
+  return start;
+}
+
+/**
+ * Builds stats for the last `monthsBack` *full* calendar months (excludes the
+ * current month).  Oldest month first.
+ */
+function buildMonthlyStats(
+  monthlyTickets: Record<string, number>,
+  monthlyResolveTimes: Record<string, number[]>,
+  currentDate: Date,
+  monthsBack = 6
+): MonthlyStat[] {
+  // start at first day of *previous* month so current month is excluded
+  const cursor = new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1);
+  const stats: MonthlyStat[] = [];
+
+  for (let i = monthsBack - 1; i >= 0; i--) {
+    const start = new Date(cursor.getFullYear(), cursor.getMonth() - i, 1);
+    const key   = start.toISOString().slice(0, 7);          // "YYYY-MM"
+    const label = start.toLocaleString('default', { month: 'short', year: 'numeric' });
+
+    const total = monthlyTickets[key] ?? 0;
+    const times = monthlyResolveTimes[key] ?? [];
+    const avg   = times.length ? times.reduce((a, b) => a + b, 0) / times.length : 0;
+
+    stats.push({
+      monthStart: `${key}-01`,
+      label,
+      totalTickets: total,
+      avgResolutionHrs: +avg.toFixed(2),
+    });
+  }
+  return stats;
 }
 
 export function analyzeTicketData(data: TicketData[]): AnalysisResult {
   const currentDate = new Date()
   let ytdCount = 0
   let last6MonthsCount = 0
-  const last4WeeksCount = 0
   let currentMonthCount = 0
   let totalProcessedRows = 0
   let totalValidRows = 0
 
-  const shiftCounts: Record<string, number> = {}
-  const last1MonthShiftCounts: Record<string, number> = {}
-  const last3MonthsShiftCounts: Record<string, number> = {}
-  const last6MonthsShiftCounts: Record<string, number> = {}
+  const shiftCounts: Record<ShiftLabel, number>       = makeShiftRecord();
+  const last1MonthShiftCounts: Record<ShiftLabel, number> = makeShiftRecord();
+  const last3MonthsShiftCounts: Record<ShiftLabel, number> = makeShiftRecord();
+  const last6MonthsShiftCounts: Record<ShiftLabel, number> = makeShiftRecord();
   const monthlyTickets: Record<string, number> = {}
   const monthlyResolveTimes: Record<string, number[]> = {}
   const weeklyTickets: Record<string, number> = {}
@@ -109,8 +195,8 @@ export function analyzeTicketData(data: TicketData[]): AnalysisResult {
 
     if (!isValidDate(item.CreateDate) || !isValidDate(item.ResolvedDate)) return
 
-    const createDate = new Date(item.CreateDate)
-    const resolveDate = new Date(item.ResolvedDate)
+    const createDate  = parseLocalISO(item.CreateDate)  ?? new Date(NaN);
+    const resolveDate = parseLocalISO(item.ResolvedDate)?? new Date(NaN);
 
     if (isNaN(createDate.getTime()) || isNaN(resolveDate.getTime())) return
 
@@ -134,6 +220,12 @@ export function analyzeTicketData(data: TicketData[]): AnalysisResult {
       monthKey,
       weekKey,
     })
+    // DEBUG - log first 30 rows
+if (totalProcessedRows <= 30) {
+  console.log(
+    `[DEBUG] ${item.CreateDate}  →  ${shift}`
+  );
+}
 
     shiftCounts[shift] = (shiftCounts[shift] || 0) + 1
 
@@ -182,6 +274,27 @@ export function analyzeTicketData(data: TicketData[]): AnalysisResult {
   const trendVsAverage = projectedCurrentMonth - avgMonthly
   const trendPercentage = avgMonthly > 0 ? (trendVsAverage / avgMonthly) * 100 : 0
 
+  // Ensure every recognised shift key exists, even if zero
+  SHIFT_LABELS.forEach((s) => {
+    shiftCounts[s]           = shiftCounts[s]           || 0
+    last1MonthShiftCounts[s] = last1MonthShiftCounts[s] || 0
+    last3MonthsShiftCounts[s] = last3MonthsShiftCounts[s] || 0
+    last6MonthsShiftCounts[s] = last6MonthsShiftCounts[s] || 0
+  })
+
+  // --- monthly stats (Dec‑May right now) ----------------------------
+  const monthlyStats = buildMonthlyStats(
+    monthlyTickets,
+    monthlyResolveTimes,
+    currentDate,
+    6
+  );
+
+  const last6MonthsAvgResolutionTime = monthlyStats.reduce(
+    (sum, m) => sum + m.avgResolutionHrs,
+    0
+  ) / (monthlyStats.length || 1);
+
   const last6CalendarMonthsCount = Object.entries(monthlyTickets)
     .sort((a, b) => (a[0] > b[0] ? 1 : -1))
     .slice(-6)
@@ -192,10 +305,12 @@ export function analyzeTicketData(data: TicketData[]): AnalysisResult {
     .slice(-4)
     .reduce((acc, [, count]) => acc + count, 0)
 
+  const last4WeeksCount = last4CalendarWeeksCount;
+
   return {
     ytdCount,
     last6MonthsCount,
-    last6MonthsAvgResolutionTime: 0,
+    last6MonthsAvgResolutionTime,
     last4WeeksCount,
     avgMonthly,
     avgWeekly,
@@ -206,6 +321,12 @@ export function analyzeTicketData(data: TicketData[]): AnalysisResult {
     last6MonthsShiftCounts,
     monthlyTickets,
     monthlyResolveTimes,
+    monthlyStats,
+    monthlyLastSix: monthlyStats.map(m => ({
+      month: m.label,
+      tickets: m.totalTickets,
+      avgResolve: m.avgResolutionHrs,
+    })),
     weeklyTickets,
     weeklyResolveTimes,
     currentMonthCount,
@@ -220,8 +341,6 @@ export function analyzeTicketData(data: TicketData[]): AnalysisResult {
     last4CalendarWeeksCount,
   }
 }
-
-import { generateTestData } from "./test-data"
 
 export function calculateExpectedResults() {
   const testData = generateTestData()

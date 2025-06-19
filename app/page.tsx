@@ -1,4 +1,4 @@
-"use client"
+'use client'
 
 import { useState } from "react"
 import { FileUpload } from "@/components/file-upload"

@@ -1,47 +1,47 @@
+
+
 "use client"
 
 import * as React from "react"
-import { Label, Pie, PieChart } from "recharts"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { type ChartConfig, ChartContainer, ChartTooltip, ChartLegend, ChartLegendContent } from "@/components/ui/chart"
+import {
+  PieChart,
+  Pie,
+  Label,
+} from "recharts"
+
+import {
+  Card,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+  CardContent,
+} from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
+import {
+  ChartContainer,
+  ChartLegend,
+  ChartLegendContent,
+  ChartTooltip,
+  type ChartConfig,
+} from "@/components/ui/chart"
 import type { AnalysisResult } from "@/lib/data-analysis"
 
-interface ShiftDistributionChartProps {
-  analysisResult: AnalysisResult
-}
+/* ------------------------------------------------------------------ */
+/*  Shared constants – import from here in the table component later  */
+/* ------------------------------------------------------------------ */
 
-const chartConfig = {
-  tickets: {
-    label: "Tickets",
-  },
-  "Front Half Days": {
-    label: "Front Half Days",
-    color: "hsl(var(--chart-1))",
-  },
-  "Front Half Nights": {
-    label: "Front Half Nights",
-    color: "hsl(var(--chart-2))",
-  },
-  "Back Half Days": {
-    label: "Back Half Days",
-    color: "hsl(var(--chart-3))",
-  },
-  "Back Half Nights": {
-    label: "Back Half Nights",
-    color: "hsl(var(--chart-4))",
-  },
-  "Wednesday Days": {
-    label: "Wednesday Days",
-    color: "hsl(var(--chart-5))",
-  },
-  "Wednesday Nights": {
-    label: "Wednesday Nights",
-    color: "hsl(220 70% 50%)",
-  },
-} satisfies ChartConfig
+export const SHIFT_LABELS = {
+  "Front Half Days": "Front Half Days",
+  "Front Half Nights": "Front Half Nights",
+  "Back Half Days": "Back Half Days",
+  "Back Half Nights": "Back Half Nights",
+  "Wednesday Days": "Wednesday Days",
+  "Wednesday Nights": "Wednesday Nights",
+} as const
 
-const colorMap: Record<string, string> = {
+export type ShiftKey = keyof typeof SHIFT_LABELS
+
+const SHIFT_COLOURS: Record<ShiftKey, string> = {
   "Front Half Days": "hsl(var(--chart-1))",
   "Front Half Nights": "hsl(var(--chart-2))",
   "Back Half Days": "hsl(var(--chart-3))",
@@ -50,46 +50,77 @@ const colorMap: Record<string, string> = {
   "Wednesday Nights": "hsl(220 70% 50%)",
 }
 
-export function ShiftDistributionChart({ analysisResult }: ShiftDistributionChartProps) {
-  const [selectedPeriod, setSelectedPeriod] = React.useState<"1mo" | "3mo" | "6mo" | "all">("6mo")
+/* Build a ChartConfig for the generic <ChartContainer /> helper  */
+const chartConfig = {
+  ...Object.fromEntries(
+    (Object.keys(SHIFT_LABELS) as ShiftKey[]).map((key) => [
+      key,
+      { label: SHIFT_LABELS[key], color: SHIFT_COLOURS[key] },
+    ]),
+  ),
+  tickets: { label: "Tickets" },
+} satisfies ChartConfig & { tickets: { label: string } }
 
-  // Get the appropriate shift counts based on selected period
-  const getShiftCounts = () => {
-    switch (selectedPeriod) {
-      case "1mo":
-        return analysisResult.last1MonthShiftCounts
-      case "3mo":
-        return analysisResult.last3MonthsShiftCounts
-      case "6mo":
-        return analysisResult.last6MonthsShiftCounts
-      case "all":
-        return analysisResult.shiftCounts
-      default:
-        return analysisResult.last6MonthsShiftCounts
-    }
+/* ------------------------------------------------------------------ */
+
+interface ShiftDistributionChartProps {
+  analysisResult: AnalysisResult
+}
+
+type Period = "1mo" | "3mo" | "6mo" | "all"
+
+/**
+ * Given the period the user selects, return the corresponding
+ * `shiftCounts` slice from `analysisResult`.
+ */
+function getShiftCountsForPeriod(
+  period: Period,
+  result: AnalysisResult,
+): Record<ShiftKey, number> {
+  switch (period) {
+    case "1mo":
+      return result.last1MonthShiftCounts as Record<ShiftKey, number>
+    case "3mo":
+      return result.last3MonthsShiftCounts as Record<ShiftKey, number>
+    case "6mo":
+      return result.last6MonthsShiftCounts as Record<ShiftKey, number>
+    case "all":
+    default:
+      return result.shiftCounts as Record<ShiftKey, number>
   }
+}
 
-  const shiftCounts = getShiftCounts()
+export function ShiftDistributionChart({
+  analysisResult,
+}: ShiftDistributionChartProps) {
+  const [period, setPeriod] = React.useState<Period>("6mo")
 
-  const chartData = Object.entries(shiftCounts)
-    .sort(([, a], [, b]) => b - a)
-    .map(([shift, count]) => ({
-      shift,
-      tickets: count,
-      fill: colorMap[shift] || "hsl(var(--chart-1))",
-      percentage: 0,
-    }))
+  /* ----- derive and memoise the dataset for the chosen period ----- */
+  const data = React.useMemo(() => {
+    const counts = getShiftCountsForPeriod(period, analysisResult)
 
-  const totalTickets = React.useMemo(() => {
-    return chartData.reduce((acc, curr) => acc + curr.tickets, 0)
-  }, [chartData])
+    /* build recharts‑friendly objects & compute totals */
+    const dataset = (Object.keys(SHIFT_LABELS) as ShiftKey[])
+      .map((key) => ({
+        shift: key,
+        tickets: counts?.[key] ?? 0,
+        fill: SHIFT_COLOURS[key],
+      }))
+      .filter((row) => row.tickets > 0)
 
-  // Calculate percentages
-  chartData.forEach((item) => {
-    item.percentage = totalTickets > 0 ? (item.tickets / totalTickets) * 100 : 0
-  })
+    const total = dataset.reduce((sum, d) => sum + d.tickets, 0)
 
-  if (totalTickets === 0) {
+    return {
+      total,
+      dataset: dataset.map((d) => ({
+        ...d,
+        percentage: total ? (d.tickets / total) * 100 : 0,
+      })),
+    }
+  }, [period, analysisResult])
+
+  /* --------------------------- empty state ----------------------- */
+  if (data.total === 0) {
     return (
       <Card className="flex flex-col">
         <CardHeader className="items-center pb-0">
@@ -97,92 +128,111 @@ export function ShiftDistributionChart({ analysisResult }: ShiftDistributionChar
           <CardDescription>Upload data to see shift distribution</CardDescription>
         </CardHeader>
         <CardContent className="flex-1 pb-0">
-          <div className="flex items-center justify-center h-[350px] text-muted-foreground">No data available</div>
+          <div className="flex items-center justify-center h-[350px] text-muted-foreground">
+            No data available
+          </div>
         </CardContent>
       </Card>
     )
   }
 
-  const getPeriodLabel = () => {
-    switch (selectedPeriod) {
-      case "1mo":
-        return "Previous full month"
-      case "3mo":
-        return "Previous 3 months"
-      case "6mo":
-        return "Previous 6 months"
-      case "all":
-        return "All time"
-      default:
-        return "Previous 6 months"
-    }
-  }
-
+  /* ----------------------------- render --------------------------- */
   return (
     <Card className="flex flex-col">
       <CardHeader className="items-center pb-0">
-        <div className="flex items-center justify-between w-full mb-2">
+        <div className="flex w-full items-center justify-between mb-2">
           <CardTitle>Shift Distribution</CardTitle>
           <div className="flex gap-1">
-            {(["1mo", "3mo", "6mo", "all"] as const).map((period) => (
+            {(["1mo", "3mo", "6mo", "all"] as const).map((p) => (
               <Button
-                key={period}
-                variant={selectedPeriod === period ? "default" : "outline"}
+                key={p}
+                variant={period === p ? "default" : "outline"}
                 size="sm"
-                onClick={() => setSelectedPeriod(period)}
-                className="text-xs px-2 py-1"
+                className="px-2 py-1 text-xs"
+                onClick={() => setPeriod(p)}
               >
-                {period === "all" ? "All" : period}
+                {p === "all" ? "All" : p}
               </Button>
             ))}
           </div>
         </div>
-        <CardDescription>Ticket distribution across shifts - {getPeriodLabel()}</CardDescription>
+        <CardDescription>
+          Ticket distribution –{" "}
+          {{
+            "1mo": "Previous full month",
+            "3mo": "Previous 3 months",
+            "6mo": "Previous 6 months",
+            all: "All time",
+          }[period]}
+        </CardDescription>
       </CardHeader>
+
       <CardContent className="flex-1 pb-0">
         <ChartContainer config={chartConfig} className="mx-auto aspect-square max-h-[350px]">
           <PieChart>
             <ChartTooltip
               cursor={false}
               content={({ active, payload }) => {
-                if (active && payload && payload.length) {
-                  const data = payload[0].payload
+                if (active && payload?.length) {
+                  const d = payload[0].payload
                   return (
                     <div className="rounded-lg border bg-background p-2 shadow-sm">
                       <div className="grid gap-2">
                         <div className="flex items-center gap-2">
-                          <div className="h-3 w-3 rounded-full" style={{ backgroundColor: data.fill }} />
-                          <span className="font-medium">{data.shift}</span>
+                          <span
+                            className="h-3 w-3 rounded-full"
+                            style={{ backgroundColor: d.fill }}
+                          />
+                          <span className="font-medium">{d.shift}</span>
                         </div>
-                        <div className="grid gap-1 text-sm">
-                          <div>Tickets: {data.tickets.toLocaleString()}</div>
-                          <div>Percentage: {data.percentage.toFixed(1)}%</div>
+                        <div className="grid text-sm gap-1">
+                          <div>Tickets: {d.tickets.toLocaleString()}</div>
+                          <div>Percentage: {d.percentage.toFixed(1)}%</div>
                         </div>
                       </div>
                     </div>
                   )
                 }
+                return null
               }}
             />
-            <Pie data={chartData} dataKey="tickets" nameKey="shift" innerRadius={80} outerRadius={140} strokeWidth={2}>
+
+            <Pie
+              data={data.dataset}
+              dataKey="tickets"
+              nameKey="shift"
+              innerRadius={80}
+              outerRadius={140}
+              strokeWidth={2}
+            >
               <Label
-                content={({ viewBox }) => {
-                  if (viewBox && "cx" in viewBox && "cy" in viewBox) {
-                    return (
-                      <text x={viewBox.cx} y={viewBox.cy} textAnchor="middle" dominantBaseline="middle">
-                        <tspan x={viewBox.cx} y={viewBox.cy} className="fill-foreground text-3xl font-bold">
-                          {totalTickets.toLocaleString()}
-                        </tspan>
-                        <tspan x={viewBox.cx} y={(viewBox.cy || 0) + 24} className="fill-muted-foreground">
-                          Total Tickets
-                        </tspan>
+                content={({ viewBox }) =>
+                  viewBox && "cx" in viewBox && "cy" in viewBox ? (
+                    <>
+                      <text
+                        x={viewBox.cx}
+                        y={viewBox.cy}
+                        textAnchor="middle"
+                        dominantBaseline="middle"
+                        className="fill-foreground text-3xl font-bold"
+                      >
+                        {data.total.toLocaleString()}
                       </text>
-                    )
-                  }
-                }}
+                      <text
+                        x={viewBox.cx}
+                        y={(viewBox.cy || 0) + 24}
+                        textAnchor="middle"
+                        dominantBaseline="middle"
+                        className="fill-muted-foreground"
+                      >
+                        Total Tickets
+                      </text>
+                    </>
+                  ) : null
+                }
               />
             </Pie>
-            <ChartLegend content={<ChartLegendContent />} className="flex-wrap gap-2 text-sm mt-4" />
+
           </PieChart>
         </ChartContainer>
       </CardContent>

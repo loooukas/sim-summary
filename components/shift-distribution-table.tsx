@@ -3,13 +3,20 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 
+// Standard order we want the rows to appear in
+const SHIFT_ORDER = ["Front Half Days", "Front Half Nights", "Back Half Days", "Back Half Nights", "Wednesday Days", "Wednesday Nights"] as const;
+
 interface ShiftDistributionTableProps {
   shiftCounts: Record<string, number>
 }
 
 export function ShiftDistributionTable({ shiftCounts }: ShiftDistributionTableProps) {
   const total = Object.values(shiftCounts).reduce((a, b) => a + b, 0)
-  const shiftEntries = Object.entries(shiftCounts).sort(([, a], [, b]) => b - a)
+  // Keep rows in our defined order, filling missing shifts with 0
+  const shiftEntries: [string, number][] = SHIFT_ORDER.map((shift) => [
+    shift,
+    shiftCounts[shift] ?? 0,
+  ]);
 
   return (
     <Card>
